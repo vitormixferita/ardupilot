@@ -285,6 +285,9 @@ bool AP_BattMonitor_INA2XX::detect_device(void)
         dev->set_address(i2c_probe_addresses[i2c_probe_next]);
         i2c_probe_next = (i2c_probe_next+1) % sizeof(i2c_probe_addresses);
     }
+    
+    has_temp = false;
+    return configure(DevType::INA219);
 
     if (read_word16(REG_228_MANUFACT_ID, id) && id == 0x5449 &&
         read_word16(REG_228_DEVICE_ID, id) && (id&0xFFF0) == 0x2280) {
@@ -320,6 +323,22 @@ void AP_BattMonitor_INA2XX::timer(void)
     switch (dev_type) {
     case DevType::UNKNOWN:
         return;
+
+    case DevType::INA219: {
+        int16_t bus_voltage16, current16;
+        if (!read_word16(REG_219_BUS_VOLTAGE, bus_voltage16) ||
+            !read_word16(REG_219_CURRENT, current16)) {
+            failed_reads++;
+            if (failed_reads > 10) {
+                // device has disconnected, we need to reconfigure it
+                dev_type = DevType::UNKNOWN;
+            }
+            return;
+        }
+        voltage = bus_voltage16 * voltage_LSB;
+        current = current16 * current_LSB;
+        break;
+    }
 
     case DevType::INA226: {
         int16_t bus_voltage16, current16;
