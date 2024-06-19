@@ -10,13 +10,15 @@
 
 #include "AP_BattMonitor_INA2xx.h"
 
+#include <GCS_MAVLink/GCS.h>
+
 extern const AP_HAL::HAL& hal;
 
 
 // INA226 specific registers
 #define REG_226_CONFIG        0x00
-#define  REG_226_CONFIG_DEFAULT 0x4127
-#define  REG_226_CONFIG_RESET   0x8000
+#define REG_226_CONFIG_DEFAULT 0x4127
+#define REG_226_CONFIG_RESET   0x8000
 #define REG_226_BUS_VOLTAGE   0x02
 #define REG_226_CURRENT       0x04
 #define REG_226_CALIBRATION   0x05
@@ -24,7 +26,7 @@ extern const AP_HAL::HAL& hal;
 
 // INA219 specific registers
 #define REG_219_CONFIG        0x00
-#define REG_219_CONFIG_DEFAULT 0x3329
+#define REG_219_CONFIG_DEFAULT 0x399f
 #define REG_219_CONFIG_RESET   0x8000
 #define REG_219_BUS_VOLTAGE   0x02
 #define REG_219_CURRENT       0x04
@@ -32,7 +34,7 @@ extern const AP_HAL::HAL& hal;
 
 // INA228 specific registers
 #define REG_228_CONFIG        0x00
-#define  REG_228_CONFIG_RESET   0x8000
+#define REG_228_CONFIG_RESET   0x8000
 #define REG_228_ADC_CONFIG    0x01
 #define REG_228_SHUNT_CAL     0x02
 #define REG_228_VBUS          0x05
@@ -44,7 +46,7 @@ extern const AP_HAL::HAL& hal;
 
 // INA237/INA238 specific registers
 #define REG_238_CONFIG        0x00
-#define  REG_238_CONFIG_RESET   0x8000
+#define REG_238_CONFIG_RESET   0x8000
 #define REG_238_ADC_CONFIG    0x01
 #define REG_238_SHUNT_CAL     0x02
 #define REG_238_VBUS          0x05
@@ -55,11 +57,11 @@ extern const AP_HAL::HAL& hal;
 #define INA_238_TEMP_C_LSB    7.8125e-3 // need to mask bottom 4 bits
 
 #ifndef DEFAULT_BATTMON_INA2XX_MAX_AMPS
-#define DEFAULT_BATTMON_INA2XX_MAX_AMPS 90.0
+#define DEFAULT_BATTMON_INA2XX_MAX_AMPS 3.2
 #endif
 
 #ifndef DEFAULT_BATTMON_INA2XX_SHUNT
-#define DEFAULT_BATTMON_INA2XX_SHUNT 0.0005
+#define DEFAULT_BATTMON_INA2XX_SHUNT 0.1
 #endif
 
 #ifndef HAL_BATTMON_INA2XX_BUS
@@ -136,14 +138,16 @@ bool AP_BattMonitor_INA2XX::configure(DevType dtype)
 
     case DevType::INA219: {
         // configure for MAX_AMPS
-        const uint16_t conf = (0x2<<9) | (0x5<<6) | (0x5<<3) | 0x7; // 2ms conv time, 16x sampling
+        const uint16_t  conf = 0x399f;
         current_LSB = max_amps / 32768.0;
-        voltage_LSB = 0.00125; // 1.25mV/bit
+        voltage_LSB = 0.0005;
         const uint16_t cal = uint16_t(0.04096 / (current_LSB * rShunt));
         if (write_word(REG_219_CONFIG, REG_219_CONFIG_RESET) && // reset
             write_word(REG_219_CONFIG, conf) &&
             write_word(REG_219_CALIBRATION, cal)) {
             dev_type = dtype;
+            GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "INA219 Config: %x", conf);
+            GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "INA219 Cal: %u", cal);
             return true;
         }
         break;
@@ -285,10 +289,15 @@ bool AP_BattMonitor_INA2XX::detect_device(void)
         dev->set_address(i2c_probe_addresses[i2c_probe_next]);
         i2c_probe_next = (i2c_probe_next+1) % sizeof(i2c_probe_addresses);
     }
-    
-    has_temp = false;
-    return configure(DevType::INA219);
-
+    if (read_word16(REG_219_CONFIG, id) && id == 0x399f &&
+        write_word(REG_226_CONFIG, REG_219_CONFIG_RESET) &&
+        write_word(REG_219_CONFIG, REG_219_CONFIG_DEFAULT) &&
+        read_word16(REG_219_CONFIG, id) &&
+        id == REG_219_CONFIG_DEFAULT){
+        has_temp = false;
+        GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "INA219 reinitialized. Config: %x", id);
+        return configure(DevType::INA219);
+    }
     if (read_word16(REG_228_MANUFACT_ID, id) && id == 0x5449 &&
         read_word16(REG_228_DEVICE_ID, id) && (id&0xFFF0) == 0x2280) {
         has_temp = true;
@@ -310,8 +319,8 @@ bool AP_BattMonitor_INA2XX::detect_device(void)
 }
 
 
-void AP_BattMonitor_INA2XX::timer(void)
-{
+void AP_BattMonitor_INA2XX::timer(void){
+
     if (dev_type == DevType::UNKNOWN) {
         if (!detect_device()) {
             return;
@@ -330,6 +339,7 @@ void AP_BattMonitor_INA2XX::timer(void)
             !read_word16(REG_219_CURRENT, current16)) {
             failed_reads++;
             if (failed_reads > 10) {
+                GCS_SEND_TEXT(MAV_SEVERITY_ERROR, "INA219 disconnected");
                 // device has disconnected, we need to reconfigure it
                 dev_type = DevType::UNKNOWN;
             }
