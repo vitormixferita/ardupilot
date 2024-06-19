@@ -22,6 +22,14 @@ extern const AP_HAL::HAL& hal;
 #define REG_226_CALIBRATION   0x05
 #define REG_226_MANUFACT_ID   0xfe
 
+// INA219 specific registers
+#define REG_219_CONFIG        0x00
+#define REG_219_CONFIG_DEFAULT 0x3329
+#define REG_219_CONFIG_RESET   0x8000
+#define REG_219_BUS_VOLTAGE   0x02
+#define REG_219_CURRENT       0x04
+#define REG_219_CALIBRATION   0x05
+
 // INA228 specific registers
 #define REG_228_CONFIG        0x00
 #define  REG_228_CONFIG_RESET   0x8000
@@ -62,7 +70,7 @@ extern const AP_HAL::HAL& hal;
 #endif
 
 // list of addresses to probe if I2C_ADDR is zero
-const uint8_t AP_BattMonitor_INA2XX::i2c_probe_addresses[] { 0x41, 0x44, 0x45 };
+const uint8_t AP_BattMonitor_INA2XX::i2c_probe_addresses[] { 0x40, 0x41, 0x44, 0x45 };
 
 const AP_Param::GroupInfo AP_BattMonitor_INA2XX::var_info[] = {
 
@@ -126,6 +134,20 @@ bool AP_BattMonitor_INA2XX::configure(DevType dtype)
     case DevType::UNKNOWN:
         return false;
 
+    case DevType::INA219: {
+        // configure for MAX_AMPS
+        const uint16_t conf = (0x2<<9) | (0x5<<6) | (0x5<<3) | 0x7; // 2ms conv time, 16x sampling
+        current_LSB = max_amps / 32768.0;
+        voltage_LSB = 0.00125; // 1.25mV/bit
+        const uint16_t cal = uint16_t(0.04096 / (current_LSB * rShunt));
+        if (write_word(REG_219_CONFIG, REG_219_CONFIG_RESET) && // reset
+            write_word(REG_219_CONFIG, conf) &&
+            write_word(REG_219_CALIBRATION, cal)) {
+            dev_type = dtype;
+            return true;
+        }
+        break;
+    }
     case DevType::INA226: {
         // configure for MAX_AMPS
         const uint16_t conf = (0x2<<9) | (0x5<<6) | (0x5<<3) | 0x7; // 2ms conv time, 16x sampling
